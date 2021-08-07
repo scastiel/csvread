@@ -1,4 +1,5 @@
 use clap::Clap;
+use std::error::Error;
 
 #[derive(Clap, Debug)]
 #[clap(
@@ -11,7 +12,17 @@ struct Args {
   filename: String,
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
   let args = Args::parse();
   println!("{:?}", args);
+
+  let mut reader = csv::ReaderBuilder::new()
+    .has_headers(true)
+    .from_path(args.filename)?;
+  println!("Headers: {:?}", reader.headers()?);
+  for record in reader.records() {
+    println!("{:?}", record?)
+  }
+
+  Ok(())
 }
