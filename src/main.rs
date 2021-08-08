@@ -1,6 +1,7 @@
 use crate::errors::AppError;
 use crate::query_parser::Query;
 use clap::Clap;
+use std::collections::HashMap;
 use std::error::Error;
 use tabular::{Row, Table};
 
@@ -36,11 +37,6 @@ impl Args {
   }
 }
 
-struct FieldComparisonWithColumnIndex {
-  col_pos: usize,
-  value: String,
-}
-
 fn main() {
   if let Err(err) = run() {
     eprintln!("{}", err);
@@ -56,14 +52,19 @@ fn run() -> Result<(), Box<dyn Error>> {
 
   let headers = reader.headers()?;
 
-  let field_comp = get_field_comp(&args, &headers)?;
+  let mut header_positions: HashMap<String, usize> = HashMap::new();
+  for (i, header) in headers.iter().enumerate() {
+    header_positions.insert(String::from(header), i);
+  }
 
   let mut table = Table::new(&row_spec(&headers));
   table.add_row(headers_row(&headers));
 
+  let query = args.parse_query()?;
+
   for record in reader.records() {
     let record = record?;
-    if !should_display_record(&record, &field_comp) {
+    if !should_display_record(&record, &query, &header_positions)? {
       continue;
     }
     table.add_row(row_for_record(&record));
@@ -98,36 +99,20 @@ fn row_for_record(record: &csv::StringRecord) -> Row {
   return row;
 }
 
-fn get_field_comp(
-  args: &Args,
-  headers: &csv::StringRecord,
-) -> Result<Option<FieldComparisonWithColumnIndex>, AppError> {
-  if let Some(query) = args.parse_query()? {
-    return Ok(Some(FieldComparisonWithColumnIndex {
-      col_pos: find_col_pos(headers.into_iter(), &query.field)?,
-      value: String::from(query.value),
-    }));
-  }
-  return Ok(None);
-}
-
 fn should_display_record(
   record: &csv::StringRecord,
-  field_comp: &Option<FieldComparisonWithColumnIndex>,
-) -> bool {
-  if let Some(FieldComparisonWithColumnIndex { col_pos, ref value }) = *field_comp {
-    return record.get(col_pos).unwrap() == value;
+  query: &Option<Query>,
+  header_positions: &HashMap<String, usize>,
+) -> Result<bool, AppError> {
+  match query {
+    Some(Query::Comparison(field, value)) => match header_positions.get(field) {
+      Some(&col_pos) => return Ok(record.get(col_pos).unwrap() == value),
+      None => return Err(AppError::InvalidFieldInWhereClause(field.clone())),
+    },
+    Some(Query::Combination(left, right)) => Ok(
+      should_display_record(&record, &Some(*left.clone()), &header_positions)?
+        || should_display_record(&record, &Some(*right.clone()), &header_positions)?,
+    ),
+    _ => Ok(true),
   }
-  return true;
-}
-
-fn find_col_pos(headers: csv::StringRecordIter, header: &str) -> Result<usize, AppError> {
-  let mut i: usize = 0;
-  for h in headers {
-    if h == header {
-      return Ok(i);
-    }
-    i += 1;
-  }
-  Err(AppError::InvalidFieldInWhereClause(String::from(header)))
 }

@@ -5,32 +5,38 @@ use nom::IResult;
 
 pub type ParsingError<'a> = nom::Err<nom::error::Error<&'a str>>;
 
-pub type Query = Comparison;
-
-#[derive(Debug, PartialEq)]
-pub struct Comparison {
-  pub field: String,
-  pub value: String,
-}
-
-impl Comparison {
-  pub fn new(field: &str, value: &str) -> Self {
-    Comparison {
-      field: String::from(field),
-      value: String::from(value),
-    }
-  }
+#[derive(Debug, PartialEq, Clone)]
+pub enum Query {
+  Comparison(String, String),
+  Combination(Box<Query>, Box<Query>),
 }
 
 impl Query {
   pub fn parse(query: &str) -> Result<Query, ParsingError> {
-    match Self::parse_comparison(&query) {
+    match Self::parse_query(&query) {
       Ok((_, query)) => Ok(query),
       Err(err) => Err(err),
     }
   }
 
-  fn parse_comparison(input: &str) -> IResult<&str, Comparison> {
+  fn parse_query(input: &str) -> IResult<&str, Query> {
+    return alt((Self::parse_combination, Self::parse_comparison))(input);
+  }
+
+  fn parse_combination(input: &str) -> IResult<&str, Query> {
+    let space = take_while(|c| c == ' ');
+    let or = tag("or");
+    let (input, (left, _, _, _, right)) = tuple((
+      Self::parse_comparison,
+      &space,
+      &or,
+      &space,
+      Self::parse_comparison,
+    ))(input)?;
+    Ok((input, Query::Combination(Box::new(left), Box::new(right))))
+  }
+
+  fn parse_comparison(input: &str) -> IResult<&str, Query> {
     let space = take_while(|c| c == ' ');
     let equals = tag("=");
     let quote = tag("'");
@@ -44,7 +50,10 @@ impl Query {
       &quote,
       &space,
     ))(input)?;
-    Ok((input, Comparison::new(field, value)))
+    Ok((
+      input,
+      Query::Comparison(String::from(field), String::from(value)),
+    ))
   }
 
   fn parse_field(input: &str) -> IResult<&str, &str> {
@@ -76,7 +85,10 @@ mod tests {
   #[test]
   fn comparison_with_spaces_inside() {
     assert_eq!(
-      Ok(Comparison::new("my_field", "my_value")),
+      Ok(Query::Comparison(
+        String::from("my_field"),
+        String::from("my_value")
+      )),
       Query::parse("my_field = 'my_value'")
     );
   }
@@ -84,7 +96,10 @@ mod tests {
   #[test]
   fn comparison_with_no_spaces_inside() {
     assert_eq!(
-      Ok(Comparison::new("my_field", "my_value")),
+      Ok(Query::Comparison(
+        String::from("my_field"),
+        String::from("my_value")
+      )),
       Query::parse("my_field='my_value'")
     );
   }
@@ -92,7 +107,10 @@ mod tests {
   #[test]
   fn comparison_with_spaces_outside() {
     assert_eq!(
-      Ok(Comparison::new("my_field", "my_value")),
+      Ok(Query::Comparison(
+        String::from("my_field"),
+        String::from("my_value")
+      )),
       Query::parse("  my_field='my_value'  ")
     );
   }
@@ -100,8 +118,28 @@ mod tests {
   #[test]
   fn with_brackets_in_field() {
     assert_eq!(
-      Ok(Comparison::new("my field", "my_value")),
+      Ok(Query::Comparison(
+        String::from("my field"),
+        String::from("my_value")
+      )),
       Query::parse("[my field] = 'my_value'")
+    );
+  }
+
+  #[test]
+  fn simple_or_combination() {
+    assert_eq!(
+      Ok(Query::Combination(
+        Box::new(Query::Comparison(
+          String::from("my field"),
+          String::from("my_value")
+        )),
+        Box::new(Query::Comparison(
+          String::from("my field"),
+          String::from("other value")
+        )),
+      )),
+      Query::parse("[my field] = 'my_value' or [my field] = 'other value'")
     );
   }
 }
