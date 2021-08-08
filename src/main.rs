@@ -109,9 +109,13 @@ fn should_display_record(
       Some(&col_pos) => return Ok(record.get(col_pos).unwrap() == value),
       None => return Err(AppError::InvalidFieldInWhereClause(field.clone())),
     },
-    Some(Query::Combination(left, right)) => Ok(
+    Some(Query::OrCombination(left, right)) => Ok(
       should_display_record(&record, &Some(*left.clone()), &header_positions)?
         || should_display_record(&record, &Some(*right.clone()), &header_positions)?,
+    ),
+    Some(Query::AndCombination(left, right)) => Ok(
+      should_display_record(&record, &Some(*left.clone()), &header_positions)?
+        && should_display_record(&record, &Some(*right.clone()), &header_positions)?,
     ),
     _ => Ok(true),
   }
