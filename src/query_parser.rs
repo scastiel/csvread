@@ -29,15 +29,24 @@ impl Query {
     ))(input);
   }
 
+  fn parse_parentheses_query(input: &str) -> IResult<&str, Query> {
+    let (input, (_, query, _)) = tuple((tag("("), Self::parse_query, tag(")")))(input)?;
+    Ok((input, query))
+  }
+
   fn parse_or_combination(input: &str) -> IResult<&str, Query> {
     let space = take_while(|c| c == ' ');
     let or = tag("or");
     let (input, (left, _, _, _, right)) = tuple((
-      alt((Self::parse_and_combination, Self::parse_comparison)),
+      alt((
+        Self::parse_and_combination,
+        Self::parse_comparison,
+        Self::parse_parentheses_query,
+      )),
       &space,
       &or,
       &space,
-      Self::parse_query,
+      alt((Self::parse_query, Self::parse_parentheses_query)),
     ))(input)?;
     Ok((input, Query::OrCombination(Box::new(left), Box::new(right))))
   }
@@ -46,11 +55,15 @@ impl Query {
     let space = take_while(|c| c == ' ');
     let or = tag("and");
     let (input, (left, _, _, _, right)) = tuple((
-      Self::parse_comparison,
+      alt((Self::parse_comparison, Self::parse_parentheses_query)),
       &space,
       &or,
       &space,
-      alt((Self::parse_and_combination, Self::parse_comparison)),
+      alt((
+        Self::parse_and_combination,
+        Self::parse_comparison,
+        Self::parse_parentheses_query,
+      )),
     ))(input)?;
     Ok((
       input,
@@ -287,6 +300,29 @@ mod tests {
         ),
       )),
       Query::parse("[my field] = 'my_value' and [my field] = 'other value' or [my other field] = 'another value' and [last field] = 'v'")
+    );
+  }
+
+  #[test]
+  fn mixed_combinations_with_parentheses() {
+    assert_eq!(
+      Ok(Query::OrCombination(
+        Box::new(Query::AndCombination(
+          Box::new(Query::Comparison(String::from("my field"), String::from("my_value"))),
+          Box::new(Query::AndCombination(
+            Box::new(Query::OrCombination(
+              Box::new(Query::Comparison(String::from("my field"), String::from("other value"))),
+              Box::new(Query::Comparison(String::from("my other field"), String::from("another value"))),
+            )),
+            Box::new(Query::Comparison(String::from("last field"), String::from("v"))),
+          ))
+        )),
+        Box::new(Query::Comparison(
+          String::from("last field"),
+          String::from("last value"),
+        ))
+      )),
+      Query::parse("[my field] = 'my_value' and ([my field] = 'other value' or [my other field] = 'another value') and [last field] = 'v' or [last field] = 'last value'")
     );
   }
 }
