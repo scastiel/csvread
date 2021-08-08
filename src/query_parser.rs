@@ -1,5 +1,6 @@
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_while, take_while1};
+use nom::character::complete::multispace0;
 use nom::combinator::all_consuming;
 use nom::sequence::tuple;
 use nom::IResult;
@@ -8,7 +9,8 @@ pub type ParsingError<'a> = nom::Err<nom::error::Error<&'a str>>;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Query {
-  Comparison(String, String),
+  Equality(String, String),
+  Difference(String, String),
   OrCombination(Box<Query>, Box<Query>),
   AndCombination(Box<Query>, Box<Query>),
 }
@@ -35,30 +37,26 @@ impl Query {
   }
 
   fn parse_or_combination(input: &str) -> IResult<&str, Query> {
-    let space = take_while(|c| c == ' ');
-    let or = tag("or");
     let (input, (left, _, _, _, right)) = tuple((
       alt((
         Self::parse_and_combination,
         Self::parse_comparison,
         Self::parse_parentheses_query,
       )),
-      &space,
-      &or,
-      &space,
+      multispace0,
+      tag("or"),
+      multispace0,
       alt((Self::parse_query, Self::parse_parentheses_query)),
     ))(input)?;
     Ok((input, Query::OrCombination(Box::new(left), Box::new(right))))
   }
 
   fn parse_and_combination(input: &str) -> IResult<&str, Query> {
-    let space = take_while(|c| c == ' ');
-    let or = tag("and");
     let (input, (left, _, _, _, right)) = tuple((
       alt((Self::parse_comparison, Self::parse_parentheses_query)),
-      &space,
-      &or,
-      &space,
+      multispace0,
+      tag("and"),
+      multispace0,
       alt((
         Self::parse_and_combination,
         Self::parse_comparison,
@@ -72,23 +70,25 @@ impl Query {
   }
 
   fn parse_comparison(input: &str) -> IResult<&str, Query> {
-    let space = take_while(|c| c == ' ');
-    let equals = tag("=");
-    let quote = tag("'");
-    let value = take_while(|c| c != '\'');
-    let (input, (field, _, _, _, value, _, _)) = tuple((
+    let (input, (field, op, _, _, value, _, _)) = tuple((
       Self::parse_field,
-      equals,
-      &space,
-      &quote,
-      value,
-      &quote,
-      &space,
+      alt((tag("="), tag("<>"))),
+      multispace0,
+      tag("'"),
+      take_while(|c| c != '\''),
+      tag("'"),
+      multispace0,
     ))(input)?;
-    Ok((
-      input,
-      Query::Comparison(String::from(field), String::from(value)),
-    ))
+    match op {
+      "=" => Ok((
+        input,
+        Query::Equality(String::from(field), String::from(value)),
+      )),
+      _ => Ok((
+        input,
+        Query::Difference(String::from(field), String::from(value)),
+      )),
+    }
   }
 
   fn parse_field(input: &str) -> IResult<&str, &str> {
@@ -99,16 +99,22 @@ impl Query {
   }
 
   fn parse_field_without_brackets(input: &str) -> IResult<&str, &str> {
-    let space = take_while(|c| c == ' ');
-    let field = take_while1(|c| c != ' ' && c != '=');
-    let (input, (_, field, _)) = tuple((&space, &field, &space))(input)?;
+    let (input, (_, field, _)) = tuple((
+      multispace0,
+      take_while1(|c| c != ' ' && c != '='),
+      multispace0,
+    ))(input)?;
     Ok((input, field))
   }
 
   fn parse_field_with_brackets(input: &str) -> IResult<&str, &str> {
-    let space = take_while(|c| c == ' ');
-    let field = take_while1(|c| c != ']');
-    let (input, (_, _, field, _, _)) = tuple((&space, tag("["), &field, tag("]"), &space))(input)?;
+    let (input, (_, _, field, _, _)) = tuple((
+      multispace0,
+      tag("["),
+      take_while1(|c| c != ']'),
+      tag("]"),
+      multispace0,
+    ))(input)?;
     Ok((input, field))
   }
 }
@@ -118,9 +124,9 @@ mod tests {
   use super::*;
 
   #[test]
-  fn comparison_with_spaces_inside() {
+  fn equality_with_spaces_inside() {
     assert_eq!(
-      Ok(Query::Comparison(
+      Ok(Query::Equality(
         String::from("my_field"),
         String::from("my_value")
       )),
@@ -129,9 +135,20 @@ mod tests {
   }
 
   #[test]
-  fn comparison_with_no_spaces_inside() {
+  fn difference_with_spaces_inside() {
     assert_eq!(
-      Ok(Query::Comparison(
+      Ok(Query::Difference(
+        String::from("my_field"),
+        String::from("my_value")
+      )),
+      Query::parse("my_field <> 'my_value'")
+    );
+  }
+
+  #[test]
+  fn equality_with_no_spaces_inside() {
+    assert_eq!(
+      Ok(Query::Equality(
         String::from("my_field"),
         String::from("my_value")
       )),
@@ -140,9 +157,9 @@ mod tests {
   }
 
   #[test]
-  fn comparison_with_spaces_outside() {
+  fn equality_with_spaces_outside() {
     assert_eq!(
-      Ok(Query::Comparison(
+      Ok(Query::Equality(
         String::from("my_field"),
         String::from("my_value")
       )),
@@ -153,7 +170,7 @@ mod tests {
   #[test]
   fn with_brackets_in_field() {
     assert_eq!(
-      Ok(Query::Comparison(
+      Ok(Query::Equality(
         String::from("my field"),
         String::from("my_value")
       )),
@@ -165,11 +182,11 @@ mod tests {
   fn simple_or_combination() {
     assert_eq!(
       Ok(Query::OrCombination(
-        Box::new(Query::Comparison(
+        Box::new(Query::Equality(
           String::from("my field"),
           String::from("my_value")
         )),
-        Box::new(Query::Comparison(
+        Box::new(Query::Equality(
           String::from("my field"),
           String::from("other value")
         )),
@@ -182,11 +199,11 @@ mod tests {
   fn simple_and_combination() {
     assert_eq!(
       Ok(Query::AndCombination(
-        Box::new(Query::Comparison(
+        Box::new(Query::Equality(
           String::from("my field"),
           String::from("my_value")
         )),
-        Box::new(Query::Comparison(
+        Box::new(Query::Equality(
           String::from("my field"),
           String::from("other value")
         )),
@@ -199,17 +216,17 @@ mod tests {
   fn two_or_combination() {
     assert_eq!(
       Ok(Query::OrCombination(
-        Box::new(Query::Comparison(
+        Box::new(Query::Equality(
           String::from("my field"),
           String::from("my_value")
         )),
         Box::new(
           Query::OrCombination(
-            Box::new(Query::Comparison(
+            Box::new(Query::Equality(
               String::from("my field"),
               String::from("other value")
             )),
-            Box::new(Query::Comparison(
+            Box::new(Query::Equality(
               String::from("my other field"),
               String::from("another value")
             ))
@@ -224,17 +241,17 @@ mod tests {
   fn mixed_combination() {
     assert_eq!(
       Ok(Query::OrCombination(
-        Box::new(Query::Comparison(
+        Box::new(Query::Equality(
           String::from("my field"),
           String::from("my_value")
         )),
         Box::new(
           Query::AndCombination(
-            Box::new(Query::Comparison(
+            Box::new(Query::Equality(
               String::from("my field"),
               String::from("other value")
             )),
-            Box::new(Query::Comparison(
+            Box::new(Query::Equality(
               String::from("my other field"),
               String::from("another value")
             ))
@@ -251,17 +268,17 @@ mod tests {
       Ok(Query::OrCombination(
         Box::new(
           Query::AndCombination(
-            Box::new(Query::Comparison(
+            Box::new(Query::Equality(
               String::from("my field"),
               String::from("my_value")
             )),
-            Box::new(Query::Comparison(
+            Box::new(Query::Equality(
               String::from("my field"),
               String::from("other value")
             )),
           )
         ),
-        Box::new(Query::Comparison(
+        Box::new(Query::Equality(
           String::from("my other field"),
           String::from("another value")
         )),
@@ -276,11 +293,11 @@ mod tests {
       Ok(Query::OrCombination(
         Box::new(
           Query::AndCombination(
-            Box::new(Query::Comparison(
+            Box::new(Query::Equality(
               String::from("my field"),
               String::from("my_value")
             )),
-            Box::new(Query::Comparison(
+            Box::new(Query::Equality(
               String::from("my field"),
               String::from("other value")
             )),
@@ -288,11 +305,11 @@ mod tests {
         ),
         Box::new(
           Query::AndCombination(
-            Box::new(Query::Comparison(
+            Box::new(Query::Equality(
               String::from("my other field"),
               String::from("another value")
             )),
-            Box::new(Query::Comparison(
+            Box::new(Query::Equality(
               String::from("last field"),
               String::from("v")
             )),
@@ -308,16 +325,16 @@ mod tests {
     assert_eq!(
       Ok(Query::OrCombination(
         Box::new(Query::AndCombination(
-          Box::new(Query::Comparison(String::from("my field"), String::from("my_value"))),
+          Box::new(Query::Equality(String::from("my field"), String::from("my_value"))),
           Box::new(Query::AndCombination(
             Box::new(Query::OrCombination(
-              Box::new(Query::Comparison(String::from("my field"), String::from("other value"))),
-              Box::new(Query::Comparison(String::from("my other field"), String::from("another value"))),
+              Box::new(Query::Equality(String::from("my field"), String::from("other value"))),
+              Box::new(Query::Equality(String::from("my other field"), String::from("another value"))),
             )),
-            Box::new(Query::Comparison(String::from("last field"), String::from("v"))),
+            Box::new(Query::Equality(String::from("last field"), String::from("v"))),
           ))
         )),
-        Box::new(Query::Comparison(
+        Box::new(Query::Equality(
           String::from("last field"),
           String::from("last value"),
         ))

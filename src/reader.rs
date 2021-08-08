@@ -67,8 +67,12 @@ fn should_display_record(
   header_positions: &HashMap<String, usize>,
 ) -> Result<bool, AppError> {
   match query {
-    Some(Query::Comparison(field, value)) => match header_positions.get(field) {
+    Some(Query::Equality(field, value)) => match header_positions.get(field) {
       Some(&col_pos) => return Ok(record.get(col_pos).unwrap() == value),
+      None => return Err(AppError::InvalidFieldInWhereClause(field.clone())),
+    },
+    Some(Query::Difference(field, value)) => match header_positions.get(field) {
+      Some(&col_pos) => return Ok(record.get(col_pos).unwrap() != value),
       None => return Err(AppError::InvalidFieldInWhereClause(field.clone())),
     },
     Some(Query::OrCombination(left, right)) => Ok(
@@ -155,6 +159,21 @@ Data.Precipitation Date.Full  Date.Month Date.Week of Date.Year Station.City Sta
 0.0                2016-12-04 12         4            2016      Mc Grath     MCG          Mc Grath, AK     Alaska        -19                       -11                       -26                       29                  2.87
 0.0                2016-12-04 12         4            2016      Tanana       TAL          Tanana, AK       Alaska        -18                       -10                       -26                       20                  1.9
 0.47               2016-12-11 12         11           2016      Gulkana      GKN          Gulkana, AK      Alaska        -20                       -11                       -28                       33                  0.85
+0.0                2016-12-11 12         11           2016      Mc Grath     MCG          Mc Grath, AK     Alaska        -18                       -11                       -24                       16                  3.43
+0.0                2016-12-11 12         11           2016      Northway     ORT          Northway, AK     Alaska        -18                       -10                       -26                       15                  0.62
+    ".trim(), out);
+    Ok(())
+  }
+
+  #[test]
+  fn with_other_mixed_filters() -> Result<(), Box<dyn Error>> {
+    let out = get_output(Some(String::from(
+      "[Data.Temperature.Avg Temp] = '-18' or [Data.Temperature.Max Temp] = '-11' and ([Data.Temperature.Min Temp] <> '-28' and [Data.Temperature.Min Temp] <> '-26')",
+    )))?;
+    assert_eq!("
+Data.Precipitation Date.Full  Date.Month Date.Week of Date.Year Station.City Station.Code Station.Location Station.State Data.Temperature.Avg Temp Data.Temperature.Max Temp Data.Temperature.Min Temp Data.Wind.Direction Data.Wind.Speed
+0.0                2016-12-04 12         4            2016      Tanana       TAL          Tanana, AK       Alaska        -18                       -10                       -26                       20                  1.9
+0.0                2016-12-11 12         11           2016      Bettles      BTT          Bettles, AK      Alaska        -19                       -11                       -27                       30                  3.28
 0.0                2016-12-11 12         11           2016      Mc Grath     MCG          Mc Grath, AK     Alaska        -18                       -11                       -24                       16                  3.43
 0.0                2016-12-11 12         11           2016      Northway     ORT          Northway, AK     Alaska        -18                       -10                       -26                       15                  0.62
     ".trim(), out);
