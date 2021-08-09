@@ -24,6 +24,12 @@ pub struct Args {
     about = "Query to filter the data, e.g \"[My column] = 'the value'\"."
   )]
   pub where_: Option<String>,
+  #[clap(
+    short = 'c',
+    long = "count",
+    about = "Counts the number of rows instead of displaying them."
+  )]
+  pub count: bool,
 }
 
 impl Args {
