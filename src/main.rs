@@ -6,6 +6,7 @@ mod args;
 mod errors;
 mod query_parser;
 mod reader;
+mod select_parser;
 
 fn main() {
   let args = Args::parse();

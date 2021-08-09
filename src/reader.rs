@@ -14,15 +14,24 @@ pub fn run(args: &Args, writer: &mut impl Write) -> Result<(), Box<dyn Error>> {
   let headers = reader.headers()?;
   let header_positions = header_positions(&headers);
 
+  let headers_to_display: Vec<String> = match args.parse_select()? {
+    Some(headers) => headers.0,
+    None => reader.headers()?.into_iter().map(String::from).collect(),
+  };
+
   let query = args.parse_query()?;
-  let mut table = Table::new(&row_spec(&headers));
-  table.add_row(headers_row(&headers));
+  let mut table = Table::new(&row_spec(&headers_to_display));
+  table.add_row(headers_row(&headers_to_display));
   for record in reader.records() {
     let record = record?;
     if !should_display_record(&record, &query, &header_positions)? {
       continue;
     }
-    table.add_row(row_for_record(&record));
+    table.add_row(row_for_record(
+      &record,
+      &header_positions,
+      &headers_to_display,
+    )?);
   }
 
   write!(writer, "{}", table)?;
@@ -37,7 +46,7 @@ fn header_positions(headers: &csv::StringRecord) -> HashMap<String, usize> {
   header_positions
 }
 
-fn row_spec(headers: &csv::StringRecord) -> String {
+fn row_spec(headers: &Vec<String>) -> String {
   headers
     .into_iter()
     .map(|_| String::from("{:<}"))
@@ -45,7 +54,7 @@ fn row_spec(headers: &csv::StringRecord) -> String {
     .join(" ")
 }
 
-fn headers_row(headers: &csv::StringRecord) -> Row {
+fn headers_row(headers: &Vec<String>) -> Row {
   let mut headers_row = Row::new();
   for header in headers {
     headers_row.add_cell(&header);
@@ -53,12 +62,19 @@ fn headers_row(headers: &csv::StringRecord) -> Row {
   return headers_row;
 }
 
-fn row_for_record(record: &csv::StringRecord) -> Row {
+fn row_for_record(
+  record: &csv::StringRecord,
+  header_positions: &HashMap<String, usize>,
+  headers_to_display: &Vec<String>,
+) -> Result<Row, AppError> {
   let mut row = Row::new();
-  for cell in record.iter() {
-    row.add_cell(cell);
+  for header in headers_to_display {
+    match header_positions.get(header) {
+      Some(&header_pos) => row.add_cell(record.get(header_pos).unwrap()),
+      None => return Err(AppError::InvalidFieldInSelectClause(header.clone())),
+    };
   }
-  return row;
+  return Ok(row);
 }
 
 fn should_display_record(
@@ -91,9 +107,10 @@ fn should_display_record(
 mod tests {
   use super::*;
 
-  fn get_output(where_: Option<String>) -> Result<String, Box<dyn Error>> {
+  fn get_output(select: Option<String>, where_: Option<String>) -> Result<String, Box<dyn Error>> {
     let args = Args {
       filename: String::from("example_data/weather.csv"),
+      select,
       where_,
     };
     let mut out = Vec::new();
@@ -104,14 +121,17 @@ mod tests {
 
   #[test]
   fn without_filter() -> Result<(), Box<dyn Error>> {
-    let out = get_output(None)?;
+    let out = get_output(None, None)?;
     assert_eq!(16744, out.lines().count());
     Ok(())
   }
 
   #[test]
   fn with_one_filter() -> Result<(), Box<dyn Error>> {
-    let out = get_output(Some(String::from("[Data.Temperature.Avg Temp] = '-21'")))?;
+    let out = get_output(
+      None,
+      Some(String::from("[Data.Temperature.Avg Temp] = '-21'")),
+    )?;
     assert_eq!("
 Data.Precipitation Date.Full  Date.Month Date.Week of Date.Year Station.City Station.Code Station.Location Station.State Data.Temperature.Avg Temp Data.Temperature.Max Temp Data.Temperature.Min Temp Data.Wind.Direction Data.Wind.Speed
 0.0                2016-12-11 12         11           2016      Fairbanks    FAI          Fairbanks, AK    Alaska        -21                       -16                       -27                       3                   2.57
@@ -121,10 +141,33 @@ Data.Precipitation Date.Full  Date.Month Date.Week of Date.Year Station.City Sta
   }
 
   #[test]
+  fn with_one_filter_and_select_two_columns() -> Result<(), Box<dyn Error>> {
+    let out = get_output(
+      Some(String::from(
+        "Date.Full, Station.City, [Data.Temperature.Avg Temp]",
+      )),
+      Some(String::from("[Data.Temperature.Avg Temp] = '-21'")),
+    )?;
+    assert_eq!(
+      "
+Date.Full  Station.City Data.Temperature.Avg Temp
+2016-12-11 Fairbanks    -21
+2016-12-18 Northway     -21
+      "
+      .trim(),
+      out
+    );
+    Ok(())
+  }
+
+  #[test]
   fn with_two_filters_with_or() -> Result<(), Box<dyn Error>> {
-    let out = get_output(Some(String::from(
-      "[Data.Temperature.Avg Temp] = '-18' or [Data.Temperature.Max Temp] = '-11'",
-    )))?;
+    let out = get_output(
+      None,
+      Some(String::from(
+        "[Data.Temperature.Avg Temp] = '-18' or [Data.Temperature.Max Temp] = '-11'",
+      )),
+    )?;
     assert_eq!("
 Data.Precipitation Date.Full  Date.Month Date.Week of Date.Year Station.City Station.Code Station.Location Station.State Data.Temperature.Avg Temp Data.Temperature.Max Temp Data.Temperature.Min Temp Data.Wind.Direction Data.Wind.Speed
 0.0                2016-12-04 12         4            2016      Mc Grath     MCG          Mc Grath, AK     Alaska        -19                       -11                       -26                       29                  2.87
@@ -139,9 +182,12 @@ Data.Precipitation Date.Full  Date.Month Date.Week of Date.Year Station.City Sta
 
   #[test]
   fn with_two_filters_with_and() -> Result<(), Box<dyn Error>> {
-    let out = get_output(Some(String::from(
-      "[Data.Temperature.Avg Temp] = '-18' and [Data.Temperature.Max Temp] = '-11'",
-    )))?;
+    let out = get_output(
+      None,
+      Some(String::from(
+        "[Data.Temperature.Avg Temp] = '-18' and [Data.Temperature.Max Temp] = '-11'",
+      )),
+    )?;
     assert_eq!("
 Data.Precipitation Date.Full  Date.Month Date.Week of Date.Year Station.City Station.Code Station.Location Station.State Data.Temperature.Avg Temp Data.Temperature.Max Temp Data.Temperature.Min Temp Data.Wind.Direction Data.Wind.Speed
 0.0                2016-12-11 12         11           2016      Mc Grath     MCG          Mc Grath, AK     Alaska        -18                       -11                       -24                       16                  3.43
@@ -151,7 +197,7 @@ Data.Precipitation Date.Full  Date.Month Date.Week of Date.Year Station.City Sta
 
   #[test]
   fn with_mixed_filters() -> Result<(), Box<dyn Error>> {
-    let out = get_output(Some(String::from(
+    let out = get_output(None, Some(String::from(
       "[Data.Temperature.Avg Temp] = '-18' or [Data.Temperature.Max Temp] = '-11' and ([Data.Temperature.Min Temp] = '-28' or [Data.Temperature.Min Temp] = '-26')",
     )))?;
     assert_eq!("
@@ -167,7 +213,7 @@ Data.Precipitation Date.Full  Date.Month Date.Week of Date.Year Station.City Sta
 
   #[test]
   fn with_other_mixed_filters() -> Result<(), Box<dyn Error>> {
-    let out = get_output(Some(String::from(
+    let out = get_output(None, Some(String::from(
       "[Data.Temperature.Avg Temp] = '-18' or [Data.Temperature.Max Temp] = '-11' and ([Data.Temperature.Min Temp] <> '-28' and [Data.Temperature.Min Temp] <> '-26')",
     )))?;
     assert_eq!("
