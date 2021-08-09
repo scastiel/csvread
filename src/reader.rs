@@ -1,6 +1,8 @@
 use crate::errors::AppError;
 use crate::query_parser::Query;
 use crate::Args;
+use csv::StringRecordsIter;
+use num_format::{Locale, ToFormattedString};
 use std::collections::HashMap;
 use std::error::Error;
 use std::io::Write;
@@ -22,37 +24,75 @@ pub fn run(args: &Args, writer: &mut impl Write) -> Result<(), Box<dyn Error>> {
   let query = args.parse_query()?;
 
   if args.count {
-    let mut total = 0;
-    let mut filtered = 0;
-    for record in reader.records() {
-      let record = record?;
-      if should_display_record(&record, &query, &header_positions)? {
-        filtered += 1;
-      }
-      total += 1;
-    }
-    if args.where_.is_some() {
-      writeln!(writer, "{} rows ({} total)", filtered, total)?;
-    } else {
-      writeln!(writer, "{} rows", total)?;
-    }
+    display_count(reader.records(), &query, &header_positions, writer)?;
   } else {
-    let mut table = Table::new(&row_spec(&headers_to_display));
-    table.add_row(headers_row(&headers_to_display));
-    for record in reader.records() {
-      let record = record?;
-      if !should_display_record(&record, &query, &header_positions)? {
-        continue;
-      }
-      table.add_row(row_for_record(
-        &record,
-        &header_positions,
-        &headers_to_display,
-      )?);
-    }
-    write!(writer, "{}", table)?;
+    display_table(
+      reader.records(),
+      &query,
+      &header_positions,
+      &headers_to_display,
+      writer,
+    )?;
   }
 
+  Ok(())
+}
+
+fn display_count<R: std::io::Read>(
+  records: StringRecordsIter<R>,
+  query: &Option<Query>,
+  header_positions: &HashMap<String, usize>,
+  writer: &mut impl Write,
+) -> Result<(), Box<dyn Error>> {
+  let mut total = 0;
+  let mut filtered = 0;
+  for record in records {
+    let record = record?;
+    if should_display_record(&record, &query, &header_positions)? {
+      filtered += 1;
+    }
+    total += 1;
+  }
+  if query.is_some() {
+    writeln!(
+      writer,
+      "{} {} ({} total)",
+      filtered.to_formatted_string(&Locale::en),
+      if filtered > 1 { "rows" } else { "row" },
+      total.to_formatted_string(&Locale::en)
+    )?;
+  } else {
+    writeln!(
+      writer,
+      "{} {}",
+      total.to_formatted_string(&Locale::en),
+      if total > 1 { "rows" } else { "row" },
+    )?;
+  }
+  Ok(())
+}
+
+fn display_table<R: std::io::Read>(
+  records: StringRecordsIter<R>,
+  query: &Option<Query>,
+  header_positions: &HashMap<String, usize>,
+  headers_to_display: &Vec<String>,
+  writer: &mut impl Write,
+) -> Result<(), Box<dyn Error>> {
+  let mut table = Table::new(&row_spec(&headers_to_display));
+  table.add_row(headers_row(&headers_to_display));
+  for record in records {
+    let record = record?;
+    if !should_display_record(&record, &query, &header_positions)? {
+      continue;
+    }
+    table.add_row(row_for_record(
+      &record,
+      &header_positions,
+      &headers_to_display,
+    )?);
+  }
+  write!(writer, "{}", table)?;
   Ok(())
 }
 
@@ -256,7 +296,7 @@ Data.Precipitation Date.Full  Date.Month Date.Week of Date.Year Station.City Sta
   #[test]
   fn with_count() -> Result<(), Box<dyn Error>> {
     let out = get_output(None, None, true)?;
-    assert_eq!("16743 rows", out);
+    assert_eq!("16,743 rows", out);
     Ok(())
   }
 
@@ -265,7 +305,20 @@ Data.Precipitation Date.Full  Date.Month Date.Week of Date.Year Station.City Sta
     let out = get_output(None, Some(String::from(
       "[Data.Temperature.Avg Temp] = '-18' or [Data.Temperature.Max Temp] = '-11' and ([Data.Temperature.Min Temp] <> '-28' and [Data.Temperature.Min Temp] <> '-26')",
     )), true)?;
-    assert_eq!("4 rows (16743 total)", out);
+    assert_eq!("4 rows (16,743 total)", out);
+    Ok(())
+  }
+
+  #[test]
+  fn with_count_and_where_one_result() -> Result<(), Box<dyn Error>> {
+    let out = get_output(
+      None,
+      Some(String::from(
+        "[Data.Temperature.Avg Temp] = '-18' and [Data.Temperature.Max Temp] = '-11'",
+      )),
+      true,
+    )?;
+    assert_eq!("1 row (16,743 total)", out);
     Ok(())
   }
 }
